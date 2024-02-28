@@ -8,16 +8,10 @@ import {
   DEFAULT_ECDSA_OWNERSHIP_MODULE,
 } from "@biconomy/modules";
 import {
+  createSmartAccountClient,
   BiconomySmartAccountV2,
-  DEFAULT_ENTRYPOINT_ADDRESS,
-} from "@biconomy/account";
-import { ChainId } from "@biconomy/core-types";
-import { IPaymaster, BiconomyPaymaster } from "@biconomy/paymaster";
-import {
-  IHybridPaymaster,
-  SponsorUserOperationDto,
   PaymasterMode,
-} from "@biconomy/paymaster";
+} from "@biconomy/account";
 import { IBundler, Bundler } from "@biconomy/bundler";
 import { contractABI } from "../contract/contractABI";
 
@@ -28,23 +22,6 @@ const provider = new ethers.providers.JsonRpcProvider(
 
 // Specify the chain ID for Polygon Mumbai
 let chainId = 80001; // Polygon Mumbai or change as per your preferred chain
-
-// Create a Bundler instance
-const bundler: IBundler = new Bundler({
-  // get from biconomy dashboard https://dashboard.biconomy.io/
-  // for mainnet bundler url contact us on Telegram
-  bundlerUrl: `https://bundler.biconomy.io/api/v2/${chainId}/nJPK7B3ru.dd7f7861-190d-41bd-af80-6877f74b8f44`,
-  chainId: ChainId.POLYGON_MUMBAI, // or any supported chain of your choice
-  entryPointAddress: DEFAULT_ENTRYPOINT_ADDRESS,
-});
-
-// Create a Paymaster instance
-const paymaster: IPaymaster = new BiconomyPaymaster({
-  // get from biconomy dashboard https://dashboard.biconomy.io/
-  // Use this paymaster url for testing, you'll need to create your own paymaster for gasless transactions on your smart contracts.
-  paymasterUrl:
-    "https://paymaster.biconomy.io/api/v1/80001/-RObQRX9ei.fc6918eb-c582-4417-9d5a-0507b17cfe71",
-});
 
 export default function Home() {
   const [smartAccount, setSmartAccount] =
@@ -82,24 +59,24 @@ export default function Home() {
 
       console.log(connectedSigner, "Signer");
 
-      const ecdsaModule = await ECDSAOwnershipValidationModule.create({
+      const config = {
+        biconomyPaymasterApiKey:
+          "-RObQRX9ei.fc6918eb-c582-4417-9d5a-0507b17cfe71",
+        bundlerUrl: `https://bundler.biconomy.io/api/v2/${chainId}/nJPK7B3ru.dd7f7861-190d-41bd-af80-6877f74b8f44`, // <-- Read about this at https://docs.biconomy.io/dashboard#bundler-url
+      };
+
+      const smartWallet = await createSmartAccountClient({
         signer: connectedSigner,
-        moduleAddress: DEFAULT_ECDSA_OWNERSHIP_MODULE,
+        biconomyPaymasterApiKey: config.biconomyPaymasterApiKey,
+        bundlerUrl: config.bundlerUrl,
+        rpcUrl: "https://rpc.ankr.com/polygon_mumbai",
       });
 
-      let biconomySmartAccount = await BiconomySmartAccountV2.create({
-        chainId: ChainId.POLYGON_MUMBAI,
-        bundler: bundler,
-        paymaster: paymaster,
-        entryPointAddress: DEFAULT_ENTRYPOINT_ADDRESS,
-        defaultValidationModule: ecdsaModule,
-        activeValidationModule: ecdsaModule,
-      });
-      console.log(biconomySmartAccount, "Smart Account");
-      setSmartAccount(biconomySmartAccount);
-      const address = await biconomySmartAccount.getAccountAddress();
-      console.log(address, "Smart Wallet Address");
-      setSmartAccountAddress(address);
+      console.log("Biconomy Smart Account", smartWallet);
+      setSmartAccount(smartWallet);
+      const saAddress = await smartWallet.getAccountAddress();
+      console.log("Smart Account Address", saAddress);
+      setSmartAccountAddress(saAddress);
     } catch (error) {
       console.log(error);
     }
@@ -129,59 +106,21 @@ export default function Home() {
       to: contractAddress,
       data: minTx.data,
     };
-    let userOp = await smartAccount?.buildUserOp([tx1]);
-    console.log("UserOp", { userOp });
-    const biconomyPaymaster =
-      smartAccount?.paymaster as IHybridPaymaster<SponsorUserOperationDto>;
-    let paymasterServiceData: SponsorUserOperationDto = {
-      mode: PaymasterMode.SPONSORED,
-      smartAccountInfo: {
-        name: "BICONOMY",
-        version: "2.0.0",
-      },
-    };
 
-    //If you get AA34 Signature Error, you have to add the below try method and recalculate callGasLimit and initiate it so that you don't get the error.
-    try {
-      const paymasterAndDataResponse =
-        await biconomyPaymaster.getPaymasterAndData(
-          //@ts-ignore
-          userOp,
-          paymasterServiceData
-        );
+    //@ts-ignore
+    let userOp = await smartAccount?.buildUserOp([tx1], {
+      paymasterServiceData: { mode: PaymasterMode.SPONSORED },
+    });
+    console.log("UserOp", userOp);
 
-      //@ts-ignore
-      userOp.paymasterAndData = paymasterAndDataResponse.paymasterAndData;
+    //@ts-ignore
+    const userOpResponse = await smartAccount?.sendUserOp(userOp);
+    console.log("userOpHash", { userOpResponse });
+    //@ts-ignore
+    const { receipt } = await userOpResponse.wait(1);
+    console.log("txHash", receipt.transactionHash);
 
-      if (
-        paymasterAndDataResponse.callGasLimit &&
-        paymasterAndDataResponse.verificationGasLimit &&
-        paymasterAndDataResponse.preVerificationGas
-      ) {
-        // Returned gas limits must be replaced in your op as you update paymasterAndData.
-        // Because these are the limits paymaster service signed on to generate paymasterAndData
-        // If you receive AA34 error check here..
-
-        //@ts-ignore
-        userOp.callGasLimit = paymasterAndDataResponse.callGasLimit;
-        //@ts-ignore
-        userOp.verificationGasLimit =
-          paymasterAndDataResponse.verificationGasLimit;
-        //@ts-ignore
-        userOp.preVerificationGas = paymasterAndDataResponse.preVerificationGas;
-      }
-
-      //@ts-ignore
-      const userOpResponse = await smartAccount?.sendUserOp(userOp);
-      console.log("userOpHash", { userOpResponse });
-      //@ts-ignore
-      const { receipt } = await userOpResponse.wait(1);
-      console.log("txHash", receipt.transactionHash);
-
-      await getCountId();
-    } catch (e) {
-      console.log("error received ", e);
-    }
+    await getCountId();
   };
 
   return (
